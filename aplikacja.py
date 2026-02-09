@@ -1,4 +1,5 @@
 import kivy
+from kivy.lang import Builder
 from kivy.app import App
 from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.boxlayout import BoxLayout
@@ -52,10 +53,13 @@ class DayCard(ButtonBehavior, BoxLayout):
         temps = day_data.get('temperature', [])
         if temps:
             mid_idx = len(temps) // 2
-            val = float(temps[mid_idx])
-            self.temp = f"{val:.0f}°"
-            if val > 0: self.icon_source = "brightness.png"
-            else: self.icon_source = "weather.png"
+            try:
+                val = float(temps[mid_idx])
+                self.temp = f"{val:.0f}°"
+                if val > 0: self.icon_source = "brightness.png"
+                else: self.icon_source = "weather.png"
+            except ValueError:
+                self.temp = "--"
         else:
             self.temp = "--"
             self.icon_source = "weather.png"
@@ -100,8 +104,12 @@ class InteractiveChart(Widget):
     def draw_base_chart(self):
         if not self.data_points: return
 
-        min_val = min(self.data_points)
-        max_val = max(self.data_points)
+        try:
+            min_val = min(self.data_points)
+            max_val = max(self.data_points)
+        except ValueError:
+            return
+
         count = len(self.data_points)
         
         margin_x = 40
@@ -198,13 +206,16 @@ class DetailsScreen(Screen):
     
     def display_data(self, day_name, data):
         self.day_title = day_name
-        self.data_temps = [float(x) for x in data.get('temperature', [])]
-        self.data_winds = [float(x) for x in data.get('wind', [])]
-        self.data_rains = [float(x) for x in data.get('shower', [])]
+        try:
+            self.data_temps = [float(x) for x in data.get('temperature', [])]
+            self.data_winds = [float(x) for x in data.get('wind', [])]
+            self.data_rains = [float(x) for x in data.get('shower', [])]
 
-        if self.data_temps: self.avg_temp = f"{sum(self.data_temps)/len(self.data_temps):.1f}°C"
-        if self.data_winds: self.avg_wind = f"{sum(self.data_winds)/len(self.data_winds):.1f} km/h"
-        if self.data_rains: self.rain_sum = f"{sum(self.data_rains):.1f} mm"
+            if self.data_temps: self.avg_temp = f"{sum(self.data_temps)/len(self.data_temps):.1f}°C"
+            if self.data_winds: self.avg_wind = f"{sum(self.data_winds)/len(self.data_winds):.1f} km/h"
+            if self.data_rains: self.rain_sum = f"{sum(self.data_rains):.1f} mm"
+        except ValueError:
+            self.avg_temp = "Błąd"
 
         self.show_chart('temp')
 
@@ -227,26 +238,8 @@ class WeatherScreen(Screen):
     current_day = StringProperty("")
     current_icon_src = StringProperty("brightness.png")
     
-    pending_display_name = ""
-
-    WOJ_MAPA = {
-        "dolnośląskie": "Województwo dolnośląskie",
-        "kujawsko-pomorskie": "Województwo kujawsko-pomorskie",
-        "lubelskie": "Lubelskie",
-        "lubuskie": "województwo lubuskie",
-        "łódzkie": "Województwo łódzkie",
-        "małopolskie": "Województwo małopolskie",
-        "mazowieckie": "Województwo mazowieckie",
-        "opolskie": "Województwo opolskie",
-        "podkarpackie": "województwo podkarpackie",
-        "podlaskie": "Województwo podlaskie",
-        "pomorskie": "Województwo pomorskie",
-        "śląskie": "Województwo śląskie",
-        "świętokrzyskie": "Województwo świętokrzyskie",
-        "warmińsko-mazurskie": "woj. warmińsko-mazurskie",
-        "wielkopolskie": "województwo wielkopolskie",
-        "zachodniopomorskie": "województwo zachodniopomorskie"
-    }
+    search_place_name = ""
+    search_gmina_name = ""
 
     def on_enter(self, *args):
         dni = ["Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota", "Niedziela"]
@@ -261,103 +254,186 @@ class WeatherScreen(Screen):
     def determine_search_method(self):
         query = self.ids.search_input.text.strip()
         if not query:
-            self.current_city = "Wpisz nazwę!"
+            self.current_city = "Wpisz: Miasto, Gmina"
             return
-        if ',' in query:
-            self.search_manual(query)
-        else:
-            self.search_auto(query)
-
-    def search_manual(self, query):
+        
         parts = query.split(',')
-        if len(parts) < 4:
-            self.current_city = "Format błędny"
+        if len(parts) < 2:
+            self.current_city = "Użyj: Miasto, Gmina"
             return
-        raw_woj = parts[0].strip()
-        key_woj = raw_woj.lower().replace("województwo", "").strip()
-        areaOne = self.WOJ_MAPA.get(key_woj, raw_woj)
-        place = parts[3].strip()
         
-        data = {"place": place, "areaOne": areaOne, "areaTwo": parts[1].strip(), "areaThree": parts[2].strip()}
-        self.send_weather_request(data, place)
+        self.search_place_name = parts[0].strip().title()
+        self.search_gmina_name = parts[1].strip().title()
+        
+        self.current_city = f"Weryfikacja: {self.search_gmina_name}..."
+        self.step1_verify_gmina(self.search_gmina_name)
 
-    def search_auto(self, query):
-        self.current_city = "Szukanie..."
-        data = {"areaThree": query}
+    def step1_verify_gmina(self, gmina_raw):
+        data = {"areaThree": gmina_raw}
         headers = {'Content-Type': 'application/json'}
-        UrlRequest('http://api.e-weather.pl/weather/placesinf', req_body=json.dumps(data), req_headers=headers, on_success=self.found_location_auto, on_failure=self.failure, on_error=self.error)
+        UrlRequest(
+            'http://api.e-weather.pl/weather/gminainf', 
+            req_body=json.dumps(data), 
+            req_headers=headers, 
+            on_success=self.on_gmina_verified, 
+            on_failure=self.failure, 
+            on_error=self.error
+        )
 
-    def found_location_auto(self, req, result):
+    def on_gmina_verified(self, req, result):
         try:
-            raw_data = result.get('result', {})
-            list_of_places = raw_data.get('result', []) if isinstance(raw_data, dict) else raw_data
-            if not list_of_places:
-                self.current_city = "Nie znaleziono"
-                return
-            first = list_of_places[0]
-            place = self.ids.search_input.text
-            areaOne, areaTwo, areaThree = "", "", ""
-            if isinstance(first, dict):
-                place = first.get('place', place)
-                areaOne = first.get('areaOne', "")
-                areaTwo = first.get('areaTwo', "")
-                areaThree = first.get('areaThree', "")
-            elif isinstance(first, list):
-                if len(first) >= 1: place = first[0]
-                for item in first:
-                    if isinstance(item, str) and "województwo" in item.lower():
-                        areaOne = item; break
-                if not areaOne and len(first) >= 2: areaOne = first[-1]
-                remaining = [x for x in first if x != place and x != areaOne]
-                if remaining: areaTwo, areaThree = remaining[0], remaining[0]
-                else: 
-                    if len(first) > 1: areaTwo, areaThree = first[1], first[1]
-                    else: areaTwo, areaThree = place, place
-            
-            data = {"place": place, "areaOne": areaOne, "areaTwo": areaTwo, "areaThree": areaThree}
-            self.send_weather_request(data, place)
-        except Exception as e:
-            print(e)
-            self.current_city = "Błąd danych"
+            if isinstance(result, list):
+                raw_data = result[0] if result else {}
+            else:
+                raw_data = result.get('result', result)
 
-    def send_weather_request(self, data, display_name):
-        self.pending_display_name = display_name.title()
+            corrected_gmina = ""
+            if isinstance(raw_data, dict):
+                 corrected_gmina = raw_data.get('areaThree', "")
+            elif isinstance(raw_data, str):
+                 corrected_gmina = raw_data
+            
+            if not corrected_gmina:
+                corrected_gmina = self.search_gmina_name
+
+            print(f"Gmina zweryfikowana: {corrected_gmina}")
+            self.current_city = "Szukanie regionu..."
+            self.step2_get_location_details(corrected_gmina)
+            
+        except Exception as e:
+            print(f"Błąd parsowania gminy: {e}")
+            self.step2_get_location_details(self.search_gmina_name)
+
+    def step2_get_location_details(self, corrected_gmina):
+        data = {"areaThree": corrected_gmina}
+        headers = {'Content-Type': 'application/json'}
+        UrlRequest(
+            'http://api.e-weather.pl/weather/placesinf', 
+            req_body=json.dumps(data), 
+            req_headers=headers, 
+            on_success=self.on_details_found, 
+            on_failure=self.failure, 
+            on_error=self.error
+        )
+
+    def on_details_found(self, req, result):
+        try:
+            if isinstance(result, dict):
+                main_res = result.get('result', [])
+            else:
+                main_res = result
+
+            if isinstance(main_res, dict) and 'result' in main_res:
+                main_res = main_res['result']
+
+            if not main_res or not isinstance(main_res, list):
+                print(f"Brak danych w manyinf: {main_res}")
+                self.current_city = "Nie znaleziono regionu"
+                return
+
+            first_match = main_res[0]
+            print(f"DEBUG first_match: {first_match}")
+            area_one = ""   
+            area_two = ""   
+            area_three = "" 
+
+            if isinstance(first_match, list):
+                if len(first_match) >= 3:
+                    area_three = first_match[0]
+                    area_two = first_match[1]
+                    area_one = first_match[2]
+                elif len(first_match) >= 2:
+                    area_three = first_match[0]
+                    area_one = first_match[1]
+                else:
+                    area_three = first_match[0]
+            
+            elif isinstance(first_match, dict):
+                area_one = first_match.get('areaOne', '')
+                area_two = first_match.get('areaTwo', '')
+                area_three = first_match.get('areaThree', self.search_gmina_name)
+
+            print(f"Znaleziono: Woj:{area_one}, Pow:{area_two}, Gm:{area_three}")
+            self.current_city = f"{self.search_place_name}"
+            self.step3_get_weather(self.search_place_name, area_one, area_two, area_three)
+
+        except Exception as e:
+            print(f"Błąd parsowania manyinf: {e}")
+            self.current_city = "Błąd Regionu"
+
+    def step3_get_weather(self, place, areaOne, areaTwo, areaThree):
+        self.current_city = "Pobieranie pogody..."
+        
+        data = {
+            "place": place,
+            "areaOne": areaOne,
+            "areaTwo": areaTwo,
+            "areaThree": areaThree
+        }
         
         headers = {'Content-Type': 'application/json'}
-        UrlRequest('http://api.e-weather.pl/weather/place', req_body=json.dumps(data), req_headers=headers, on_success=self.success_weather, on_failure=self.failure, on_error=self.error)
+        UrlRequest(
+            'http://api.e-weather.pl/weather/place', 
+            req_body=json.dumps(data), 
+            req_headers=headers, 
+            on_success=self.success_weather, 
+            on_failure=self.failure, 
+            on_error=self.error
+        )
 
     def success_weather(self, req, result):
         try:
-            main_result = result.get('result', {})
-            forecasts = main_result.get('result', [])
+            if isinstance(result, list):
+                forecasts = result
+            else:
+                main_result = result.get('result', {})
+                if isinstance(main_result, dict) and 'result' in main_result:
+                    forecasts = main_result['result']
+                elif isinstance(main_result, list):
+                    forecasts = main_result
+                else:
+                    forecasts = []
+
             if not forecasts:
                 self.current_city = "Brak danych"
                 return
 
             today = forecasts[0]
-            raw_temp = today['temperature'][0] if today['temperature'] else "0"
-            temp_val = float(raw_temp)
-            self.current_temp = f"{temp_val:.0f}°"
-            self.current_city = self.pending_display_name
+            temps = today.get('temperature', [])
+            raw_temp = temps[0] if temps else "0"
             
-            if temp_val > 0: self.current_icon_src = "brightness.png"
-            else: self.current_icon_src = "weather.png"
+            try:
+                temp_val = float(raw_temp)
+                self.current_temp = f"{temp_val:.0f}°"
+                if temp_val > 0: self.current_icon_src = "brightness.png"
+                else: self.current_icon_src = "weather.png"
+            except ValueError:
+                self.current_temp = "--"
 
-            self.ids.forecast_grid.clear_widgets()
-            dni_tyg = ["Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota", "Niedziela"]
-            today_idx = datetime.datetime.now().weekday()
+            self.current_city = self.search_place_name
 
-            for i, day_data in enumerate(forecasts[:7]):
-                idx = (today_idx + i) % 7
-                day_name = dni_tyg[idx]
-                card = DayCard(day_name=day_name, day_data=day_data, controller=self)
-                self.ids.forecast_grid.add_widget(card)
+            if self.ids.forecast_grid:
+                self.ids.forecast_grid.clear_widgets()
+                dni_tyg = ["Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota", "Niedziela"]
+                today_idx = datetime.datetime.now().weekday()
+
+                for i, day_data in enumerate(forecasts[:7]):
+                    idx = (today_idx + i) % 7
+                    day_name = dni_tyg[idx]
+                    card = DayCard(day_name=day_name, day_data=day_data, controller=self)
+                    self.ids.forecast_grid.add_widget(card)
+                
         except Exception as e:
-            print(f"Błąd: {e}")
-            self.current_city = "Błąd"
+            print(f"Błąd przetwarzania pogody: {e}")
+            self.current_city = "Błąd Danych"
 
-    def failure(self, req, result): self.current_city = "Błąd API"
-    def error(self, req, error): self.current_city = "Błąd sieci"
+    def failure(self, req, result): 
+        print("API Failure:", result)
+        self.current_city = "Błąd API"
+        
+    def error(self, req, error): 
+        print("Network Error:", error)
+        self.current_city = "Błąd sieci"
 
     def open_details(self, day_name, data):
         details = self.manager.get_screen('details')
@@ -368,12 +444,15 @@ class WeatherScreen(Screen):
 class WeatherApp(App):
     app_settings = ObjectProperty(None)
     def build(self):
+        Builder.load_file('weather.kv')
         self.app_settings = AppSettings()
         root = FloatLayout()
         sm = ScreenManager()
+        
         sm.add_widget(WelcomeScreen(name='welcome'))
         sm.add_widget(WeatherScreen(name='weather'))
         sm.add_widget(DetailsScreen(name='details'))
+        
         root.add_widget(sm)
         
         self.brightness_overlay = Widget()
